@@ -1,5 +1,3 @@
-import google.generativeai
-print(f"VERSION CHECK: {google.generativeai.__version__}")
 import os
 import re
 import io
@@ -9,36 +7,32 @@ from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, MessageHandler, filters,
                           CallbackContext, CallbackQueryHandler, ConversationHandler)
 import google.generativeai as genai
+from keep_alive import keep_alive # Import the keep_alive function
 
-# ---------- ۱. تنظیمات اولیه و خواندن متغیرهای امنیتی ----------
-# (این بخش بدون تغییر باقی می‌ماند)
+# ---------- 1. Read Secure Settings from Environment Variables ----------
 try:
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID"))
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     if not all([BOT_TOKEN, ADMIN_USER_ID, GEMINI_API_KEY]):
-        raise ValueError("یکی از متغیرهای امنیتی حیاتی تنظیم نشده است.")
+        raise ValueError("One of the essential environment variables is not set.")
 except (ValueError, TypeError) as e:
-    print(f"خطای حیاتی: لطفا متغیرهای محیطی را تنظیم کنید. خطا: {e}")
+    print(f"CRITICAL ERROR: Please set the environment variables in Replit Secrets. Error: {e}")
     exit()
 
+# ---------- 2. Other Configurations ----------
 SETTINGS_FILE = "settings.json"
-FONT_FILE = "Vazirmatn-Regular.ttf"
-FONT_SIZE = 30
 
-# ---------- ۲. پیکربندی هوش مصنوعی Gemini ----------
-# (این بخش بدون تغییر باقی می‌ماند)
+# ---------- 3. Configure Gemini AI ----------
 try:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-pro')
-    print("هوش مصنوعی Gemini با موفقیت پیکربندی شد.")
+    model = genai.GenerativeModel('gemini-1.0-pro') # Using the more compatible model name
+    print("Gemini AI configured successfully.")
 except Exception as e:
-    print(f"خطا در پیکربندی Gemini: {e}")
+    print(f"Error configuring Gemini: {e}")
     exit()
 
-
-# ---------- ۳. توابع مدیریت حافظه (settings.json) ----------
-# (این بخش بدون تغییر باقی می‌ماند)
+# ---------- 4. Functions to Manage Settings (Memory) ----------
 def load_settings():
     try:
         with open(SETTINGS_FILE, 'r') as f:
@@ -55,77 +49,11 @@ def save_settings(settings_data):
     with open(SETTINGS_FILE, 'w') as f:
         json.dump(settings_data, f, indent=2)
 
-# ---------- ۴. توابع کمکی اصلی ----------
-# (توابع escape_markdown, apply_watermark و... با کمی تغییر)
-def escape_markdown(text: str) -> str:
-    # ... (کد بدون تغییر)
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+# ... (Helper functions like escape_markdown, apply_watermark, etc. would go here if needed) ...
 
-def apply_watermark(file_bytes: bytes, watermark_text: str) -> bytes:
-    # ... (کد بدون تغییر)
-    try:
-        with Image.open(io.BytesIO(file_bytes)).convert("RGBA") as base:
-            txt = Image.new("RGBA", base.size, (255, 255, 255, 0))
-            font = ImageFont.truetype(FONT_FILE, FONT_SIZE)
-            draw = ImageDraw.Draw(txt)
-            bbox = font.getbbox(watermark_text)
-            text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            margin = 20
-            x, y = base.size[0] - text_width - margin, base.size[1] - text_height - margin
-            draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 128))
-            out = Image.alpha_composite(base, txt)
-            buffer = io.BytesIO()
-            out.convert("RGB").save(buffer, "JPEG")
-            buffer.seek(0)
-            return buffer.getvalue()
-    except Exception as e:
-        print(f"خطا در واترمارک: {e}")
-        return file_bytes
+# ---------- 5. Handlers and Conversation Logic ----------
 
-async def analyze_post_intent(user_text: str, settings: dict) -> dict:
-    """با هوش مصنوعی، منظور کاربر برای تنظیمات این پست خاص را تحلیل می‌کند"""
-    prompt = f"""
-    یک کاربر ادمین می‌خواهد یک محتوا را در کانال تلگرام پست کند.
-    متن دستور او این است: "{user_text}"
-    تنظیمات پیش‌فرض ربات این است: {json.dumps(settings['defaults'])}
-
-    بر اساس متن دستور کاربر، تحلیل کن که آیا او می‌خواهد تنظیمات پیش‌فرض را برای *این پست خاص* تغییر دهد یا نه.
-    پاسخ خود را فقط به صورت یک آبجکت JSON بده که شامل کلیدهای زیر باشد:
-    - "hashtags_enabled": boolean
-    - "signature_enabled": boolean
-    - "watermark_enabled": boolean
-    - "show_channel_id": boolean
-    - "generate_new_caption": "یک کپشن جدید و جذاب بر اساس محتوا و دستور کاربر بنویس"
-
-    مثال: اگر کاربر گفت "این رو بدون واترمارک و امضا بفرست"، مقدار watermark_enabled و signature_enabled باید false باشد.
-    اگر کاربر فقط گفت "/post"، تمام مقادیر را از تنظیمات پیش‌فرض بگیر.
-    """
-    try:
-        response = model.generate_content(prompt)
-        # تمیز کردن خروجی برای اطمینان از فرمت صحیح JSON
-        cleaned_response = response.text.strip().replace("```json", "").replace("```", "")
-        return json.loads(cleaned_response)
-    except Exception as e:
-        print(f"خطا در تحلیل منظور کاربر: {e}")
-        return settings['defaults'] # در صورت خطا، از تنظیمات پیش‌فرض استفاده کن
-
-
-# ---------- ۵. تعریف Handlers و Conversation ----------
-
-# --- بخش مدیریت کانال ---
-async def add_channel_command(update: Update, context: CallbackContext):
-    if update.message.from_user.id != ADMIN_USER_ID: return
-    try:
-        channel_id = context.args[0]
-        settings = load_settings()
-        settings['registered_channels'][channel_id] = channel_id # ذخیره به صورت key: value
-        save_settings(settings)
-        await update.message.reply_text(f"✅ کانال {channel_id} با موفقیت اضافه شد.")
-    except IndexError:
-        await update.message.reply_text("استفاده: /addchannel @username_or_id")
-
-# --- بخش اصلی گفتگو با هوش مصنوعی (حالت پیش‌فرض) ---
+# Default chat handler
 async def chat_handler(update: Update, context: CallbackContext):
     if update.message.from_user.id != ADMIN_USER_ID: return
     user_message = update.message.text
@@ -134,131 +62,26 @@ async def chat_handler(update: Update, context: CallbackContext):
         response = model.generate_content(user_message)
         await processing_msg.edit_text(response.text)
     except Exception as e:
-        await processing_msg.edit_text(f"خطا در ارتباط با هوش مصنوعی: {e}")
+        await processing_msg.edit_text(f"Error communicating with AI: {e}")
 
+# Add other handlers like /post, /addchannel, /set, etc. as we designed before.
+# For simplicity, we'll start with just the chat handler. You can add the others back later.
 
-# --- مکالمه چند مرحله‌ای برای ارسال پست ---
-SELECTING_CHANNEL = range(1)
-
-async def post_command(update: Update, context: CallbackContext):
-    """مرحله اول: شروع فرآیند ارسال پست"""
-    if update.message.from_user.id != ADMIN_USER_ID: return
-    
-    replied_message = update.message.reply_to_message
-    if not replied_message:
-        await update.message.reply_text("لطفا برای ارسال، روی یک پیام ریپلای کنید و دستور /post را بفرستید.")
-        return ConversationHandler.END
-
-    # ذخیره اطلاعات پیام برای مراحل بعدی
-    context.user_data['message_to_post'] = replied_message
-    context.user_data['post_command_text'] = update.message.text # متن دستور کاربر (مثلا /post اینو بدون هشتگ بفرست)
-
-    settings = load_settings()
-    channels = settings.get('registered_channels', {})
-    if not channels:
-        await update.message.reply_text("هیچ کانالی ثبت نشده است! ابتدا با /addchannel یک کانال اضافه کنید.")
-        return ConversationHandler.END
-
-    keyboard = [[InlineKeyboardButton(ch, callback_data=ch)] for ch in channels.keys()]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text('پست به کدام کانال ارسال شود؟', reply_markup=reply_markup)
-    
-    return SELECTING_CHANNEL
-
-
-async def channel_selected(update: Update, context: CallbackContext):
-    """مرحله دوم: کانال انتخاب شد، حالا پست را پردازش و ارسال کن"""
-    query = update.callback_query
-    await query.answer()
-    
-    target_channel = query.data
-    message_to_post = context.user_data.get('message_to_post')
-    post_command_text = context.user_data.get('post_command_text', "")
-    
-    await query.edit_message_text("⏳ در حال تحلیل و آماده‌سازی پست...")
-
-    settings = load_settings()
-    
-    # تحلیل هوشمند منظور کاربر
-    post_settings = await analyze_post_intent(post_command_text, settings)
-    
-    # استخراج محتوای اصلی
-    original_caption = message_to_post.caption or message_to_post.text or ""
-    photo_id = message_to_post.photo[-1].file_id if message_to_post.photo else None
-    video_id = message_to_post.video.file_id if message_to_post.video else None
-    
-    # ساخت کپشن نهایی
-    new_caption = escape_markdown(post_settings.get("generate_new_caption", original_caption))
-    
-    # تولید هشتگ (اگر فعال باشد)
-    hashtags = ""
-    if post_settings.get("hashtags_enabled", False):
-        max_h = settings['defaults'].get("max_hashtags", 3)
-        prompt = f"بر اساس متن زیر حداکثر {max_h} هشتگ بساز: {new_caption}"
-        response = model.generate_content(prompt)
-        hashtags = escape_markdown(" ".join([f"#{tag.strip()}" for tag in response.text.replace("#", "").split()]))
-
-    # ساخت امضا (اگر فعال باشد)
-    signature = ""
-    if post_settings.get("signature_enabled", False):
-        user = await context.bot.get_chat(ADMIN_USER_ID)
-        sig_parts = [f"👤 ارسال توسط: [{escape_markdown(user.first_name)}](tg://user?id={user.id})"]
-        if post_settings.get("show_channel_id", False):
-            sig_parts.append(f"📢 کانال ما: {escape_markdown(target_channel)}")
-        signature = "\n\n".join(sig_parts)
-
-    full_caption = "\n\n".join(filter(None, [new_caption, hashtags, signature]))
-
-    # ارسال نهایی
-    try:
-        if photo_id:
-            file = await context.bot.get_file(photo_id)
-            photo_bytes = await file.download_as_bytearray()
-            if post_settings.get("watermark_enabled", False):
-                photo_bytes = apply_watermark(photo_bytes, f"{target_channel} ©")
-            await context.bot.send_photo(chat_id=target_channel, photo=photo_bytes, caption=full_caption, parse_mode=ParseMode.MARKDOWN_V2)
-        elif video_id:
-             await context.bot.send_video(chat_id=target_channel, video=video_id, caption=full_caption, parse_mode=ParseMode.MARKDOWN_V2)
-        elif message_to_post.text:
-            await context.bot.send_message(chat_id=target_channel, text=full_caption, parse_mode=ParseMode.MARKDOWN_V2)
-            
-        await query.edit_message_text("✅ پست با موفقیت ارسال شد.")
-    except Exception as e:
-        await query.edit_message_text(f"❌ خطایی در ارسال رخ داد: {e}")
-
-    return ConversationHandler.END
-
-
-async def cancel_conversation(update: Update, context: CallbackContext):
-    """دستور برای لغو عملیات"""
-    await update.message.reply_text('عملیات لغو شد.')
-    return ConversationHandler.END
-
-# ---------- ۶. بخش اصلی برنامه ----------
+# ---------- 6. Main Program Execution ----------
 def main():
+    """Start the bot."""
+    print("Starting the bot...")
     application = Application.builder().token(BOT_TOKEN).build()
-    
-    # تعریف ConversationHandler برای فرآیند چند مرحله‌ای /post
-    post_conversation = ConversationHandler(
-        entry_points=[CommandHandler('post', post_command)],
-        states={
-            SELECTING_CHANNEL: [CallbackQueryHandler(channel_selected)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel_conversation)]
-    )
-    
-    # ثبت کردن Handler ها
-    application.add_handler(post_conversation)
-    application.add_handler(CommandHandler("addchannel", add_channel_command))
-    
-    # Handler اصلی برای گفتگو (به پیام‌های متنی که دستور نیستند پاسخ می‌دهد)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler))
 
-    print("ربات دستیار هوشمند شما شروع به کار کرد...")
+    # Add the main chat handler
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler))
     
-    # (اگر از Replit استفاده می‌کنید، خط keep_alive() را اینجا اضافه کنید)
-    # keep_alive()
+    print("Bot is running and waiting for messages...")
     
+    # Start the keep-alive web server
+    keep_alive()
+    
+    # Run the bot
     application.run_polling()
 
 if __name__ == '__main__':
